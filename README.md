@@ -90,7 +90,7 @@ usbjieguo tui --port 9000 --dir /tmp/files --name my-pc
 | `→` / `Enter` | 選擇 / 進入 |
 | `Ctrl-C` | 退出程式 |
 
-**Serve 接收頁（Telescope 檔案瀏覽）**
+**Serve 接收頁**
 
 | 按鍵 | 動作 |
 |------|------|
@@ -113,7 +113,7 @@ usbjieguo tui --port 9000 --dir /tmp/files --name my-pc
 | `r` | 重新掃描 |
 | `←` / `Esc` / `q` | 返回主選單 |
 
-**Send 檔案選擇頁（Telescope 模式）**
+**Send 檔案選擇頁**
 
 | 按鍵 | 動作 |
 |------|------|
@@ -124,7 +124,6 @@ usbjieguo tui --port 9000 --dir /tmp/files --name my-pc
 | `←` / `Backspace` | 上一層（搜尋欄有字時刪除字元） |
 | `Ctrl-U` | 清除搜尋欄 |
 | `Esc` / `Ctrl-Q` | 返回掃描頁 |
-| `Ctrl-F` | 呼叫 Neovim Telescope 選檔（需在 Neovim `:terminal` 內） |
 
 **傳送中頁面**
 
@@ -255,124 +254,3 @@ curl -F "file=@./test.txt" http://192.168.0.212:8787/upload
 > 僅建議在受信任的私人網路（家用 LAN、lab 內網）使用。加密功能預計在未來版本加入。
 
 ---
-
-## Neovim 整合
-
-可在 Neovim 裡用浮動視窗開啟 TUI，或用 Telescope 啟動 serve 和瀏覽已接收的檔案。
-
-### 需要的 Plugin
-
-- [lazy.nvim](https://github.com/folke/lazy.nvim)（plugin manager）
-- [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim)
-- [telescope-file-browser.nvim](https://github.com/nvim-telescope/telescope-file-browser.nvim)
-
-### 設定方式
-
-將以下內容加入你的 `init.lua`（Windows：`%LOCALAPPDATA%\nvim\init.lua`，macOS/Linux：`~/.config/nvim/init.lua`）：
-
-```lua
--- Bootstrap lazy.nvim
-local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
-if not vim.loop.fs_stat(lazypath) then
-  vim.fn.system({
-    "git", "clone", "--filter=blob:none",
-    "https://github.com/folke/lazy.nvim.git",
-    "--branch=stable", lazypath,
-  })
-end
-vim.opt.rtp:prepend(lazypath)
-
-require("lazy").setup({
-  { "nvim-telescope/telescope.nvim", dependencies = { "nvim-lua/plenary.nvim" } },
-  { "nvim-telescope/telescope-file-browser.nvim",
-    dependencies = { "nvim-telescope/telescope.nvim", "nvim-lua/plenary.nvim" } },
-})
-
--- TUI 浮動視窗
-local function open_usbjieguo()
-  local width  = math.floor(vim.o.columns * 0.85)
-  local height = math.floor(vim.o.lines   * 0.85)
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_open_win(buf, true, {
-    relative = "editor", width = width, height = height,
-    row = math.floor((vim.o.lines - height) / 2),
-    col = math.floor((vim.o.columns - width) / 2),
-    style = "minimal", border = "rounded",
-    title = " usbjieguo ", title_pos = "center",
-  })
-  local cmd = vim.fn.has("win32") == 1
-    and { "cmd", "/c", "usbjieguo", "tui" } or { "usbjieguo", "tui" }
-  vim.fn.termopen(cmd, {
-    on_exit = function()
-      if vim.api.nvim_buf_is_valid(buf) then
-        vim.api.nvim_buf_delete(buf, { force = true })
-      end
-    end,
-  })
-  vim.keymap.set("t", "<C-q>", "<C-c>", { buffer = buf, noremap = true })
-  vim.cmd("startinsert")
-end
-
--- Serve（背景執行）
-local serve_job_id = nil
-local serve_dir    = vim.fn.expand("~") .. "/recv"
-
-local function serve_start(dir)
-  if serve_job_id then return end
-  serve_dir = dir or serve_dir
-  local cmd = vim.fn.has("win32") == 1
-    and { "cmd", "/c", "usbjieguo", "serve", "--dir", serve_dir }
-    or  { "usbjieguo", "serve", "--dir", serve_dir }
-  serve_job_id = vim.fn.jobstart(cmd, {
-    on_exit = function() serve_job_id = nil
-      vim.notify("usbjieguo serve 已停止", vim.log.levels.INFO)
-    end,
-  })
-  vim.notify("usbjieguo serve 啟動 → " .. serve_dir, vim.log.levels.INFO)
-end
-
-local function usbjieguo_serve()
-  require("telescope").load_extension("file_browser")
-  require("telescope").extensions.file_browser.file_browser({
-    prompt_title = "選擇接收目錄 (Enter 確認)",
-    dir_only = true,
-    attach_mappings = function(prompt_bufnr, map)
-      local actions = require("telescope.actions")
-      local state   = require("telescope.actions.state")
-      local function confirm()
-        local entry = state.get_selected_entry()
-        actions.close(prompt_bufnr)
-        serve_start(entry and (entry.path or entry[1]) or serve_dir)
-      end
-      map("i", "<CR>", confirm) ; map("n", "<CR>", confirm)
-      return true
-    end,
-  })
-end
-
-local function usbjieguo_browse()
-  require("telescope.builtin").find_files({
-    prompt_title = "已接收的檔案 ← " .. serve_dir,
-    cwd = serve_dir, hidden = true, no_ignore = true,
-  })
-end
-
-vim.g.mapleader = " "
-vim.keymap.set("n", "<leader>u",  open_usbjieguo,                           { desc = "usbjieguo: TUI" })
-vim.keymap.set("n", "<leader>us", usbjieguo_serve,                           { desc = "usbjieguo: start serve" })
-vim.keymap.set("n", "<leader>uS", function() vim.fn.jobstop(serve_job_id) end, { desc = "usbjieguo: stop serve" })
-vim.keymap.set("n", "<leader>ur", usbjieguo_browse,                          { desc = "usbjieguo: browse received" })
-```
-
-### 快捷鍵
-
-| 按鍵 | 功能 |
-|------|------|
-| `Space + u` | 開啟 usbjieguo TUI（浮動視窗） |
-| `Space + us` | 用 Telescope 選目錄後啟動 serve（背景執行） |
-| `Space + uS` | 停止 serve |
-| `Space + ur` | 用 Telescope 瀏覽已接收的檔案 |
-| `Ctrl-Q` | 退出 TUI（在浮動視窗內） |
-| `Ctrl-\ Ctrl-N` | 跳回 Neovim normal mode（不關 TUI） |
-
-> `usbjieguo` binary 需在 PATH 中。Windows 請確認安裝目錄已加入系統 PATH。
