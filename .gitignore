@@ -1,0 +1,19 @@
+# Compiled binaries – catch the main binary and any ad-hoc build names
+usbjieguo
+usbjieguo*.exe
+*.exe~
+
+# Build output
+dist/
+
+# Received files (runtime data, not source)
+recv/
+
+# Go tooling
+vendor/
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo

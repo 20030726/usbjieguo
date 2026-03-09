@@ -1,0 +1,21 @@
+# Normalize line endings to LF in the repository.
+# Files are checked out with native endings on each platform.
+* text=auto
+
+# Go source files: always LF
+*.go   text eol=lf
+*.mod  text eol=lf
+*.sum  text eol=lf
+
+# Shell scripts: always LF
+Makefile text eol=lf
+*.sh     text eol=lf
+
+# Markdown / docs
+*.md text eol=lf
+
+# Binaries: do not modify
+*.exe  binary
+*.zip  binary
+*.png  binary
+*.jpg  binary
