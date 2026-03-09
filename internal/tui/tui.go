@@ -5,7 +5,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -38,7 +37,6 @@ const (
 	pageScanPeers
 	pageFilePicker // browse filesystem to pick a file
 	pageSending
-	pageNvimPick // waiting for Neovim Telescope to respond
 )
 
 // ── Banner ───────────────────────────────────────────────────────────────────
@@ -117,8 +115,6 @@ type scanCountdownTickMsg struct{} // per-second tick to update countdown displa
 type fileReceivedMsg server.ReceivedFile
 type sendDoneMsg struct{ err error }
 type servePollTickMsg struct{} // fired when pollServeEvents times out with no new file
-type nvimPickPollMsg struct{}
-type nvimPickResultMsg struct{ path string; err error }
 type serverStartedMsg struct {
 	err error
 	srv *server.Server // non-nil on success
@@ -168,10 +164,6 @@ type Model struct {
 	sendErr   string
 	sendFile  string
 
-	// Neovim integration ($NVIM is set automatically by Neovim when TUI runs inside :terminal)
-	nvimSocket  string // empty when not running inside Neovim
-	nvimPickReq string // temp file: TUI writes current dir, Neovim reads
-	nvimPickRes string // temp file: Neovim writes selected path, TUI reads
 }
 
 // New creates the root TUI model.
@@ -235,9 +227,6 @@ func New(servePort int, serveName, serveDir string) Model {
 		serveName:      serveName,
 		serveDir:       serveDir,
 		serveEvents:    make(chan server.ReceivedFile, 32),
-		nvimSocket:     os.Getenv("NVIM"),
-		nvimPickReq:    filepath.Join(os.TempDir(), "usbjieguo_pick.req"),
-		nvimPickRes:    filepath.Join(os.TempDir(), "usbjieguo_pick.res"),
 	}
 }
 
@@ -380,8 +369,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateFilePicker(msg)
 	case pageSending:
 		return m.updateSending(msg)
-	case pageNvimPick:
-		return m.updateNvimPick(msg)
 	}
 	return m, nil
 }
@@ -600,7 +587,7 @@ func (m Model) updateScan(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// updateFilePicker handles input on the file/dir browser page (telescope mode).
+// updateFilePicker handles input on the file/dir browser page.
 func (m Model) updateFilePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch key.String() {
@@ -623,18 +610,6 @@ func (m Model) updateFilePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(m.peerSpinner.Tick, scanPeers())
 			}
 			return m, nil
-
-		case "ctrl+f":
-			if m.nvimSocket == "" {
-				m.browserErr = "ctrl+f 只在 Neovim :terminal 內有效"
-				return m, nil
-			}
-			_ = os.Remove(m.nvimPickRes)
-			_ = os.WriteFile(m.nvimPickReq, []byte(m.browser.currentDir), 0o600)
-			_ = exec.Command("nvim", "--server", m.nvimSocket,
-				"--remote-send", ":lua usbjieguo_pick_file()<CR>").Start()
-			m.page = pageNvimPick
-			return m, pollNvimPick(m.nvimPickRes)
 
 		case "ctrl+u":
 			m.browser.input.SetValue("")
@@ -745,68 +720,6 @@ func (m Model) updateSending(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateNvimPick handles the waiting-for-Telescope page.
-func (m Model) updateNvimPick(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if msg.String() == "esc" {
-			_ = os.Remove(m.nvimPickReq)
-			_ = os.Remove(m.nvimPickRes)
-			m.page = pageFilePicker
-			return m, nil
-		}
-	case nvimPickPollMsg:
-		// 還沒收到回應，繼續輪詢
-		return m, pollNvimPick(m.nvimPickRes)
-	case nvimPickResultMsg:
-		if msg.err != nil {
-			m.browserErr = "Telescope: " + msg.err.Error()
-			m.page = pageFilePicker
-			return m, nil
-		}
-		info, err := os.Stat(msg.path)
-		if err != nil {
-			m.browserErr = "Telescope: " + err.Error()
-			m.page = pageFilePicker
-			return m, nil
-		}
-		if info.IsDir() {
-			_ = m.browser.cd(msg.path)
-			m.page = pageFilePicker
-			return m, nil
-		}
-		// 直接送出選到的檔案
-		_ = m.browser.cd(filepath.Dir(msg.path))
-		return m, m.startSend(msg.path)
-	}
-	return m, nil
-}
-
-// viewNvimPick shows a waiting screen while Neovim Telescope is open.
-func (m Model) viewNvimPick() string {
-	header := titleStyle.Render("Waiting for Telescope…")
-	hint := dimStyle.Render("  esc cancel")
-	return "\n" + header +
-		"\n\n  在 Neovim 中用 Telescope 選一個檔案，然後按 Enter。\n\n" + hint
-}
-
-// pollNvimPick polls the response temp file every 200 ms.
-func pollNvimPick(resFile string) tea.Cmd {
-	return tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg {
-		data, err := os.ReadFile(resFile)
-		if err != nil {
-			// 檔案尚不存在，繼續等待
-			return nvimPickPollMsg{}
-		}
-		path := strings.TrimSpace(string(data))
-		_ = os.Remove(resFile)
-		if path == "" {
-			return nvimPickResultMsg{err: fmt.Errorf("empty selection")}
-		}
-		return nvimPickResultMsg{path: path}
-	})
-}
-
 // ── View ──────────────────────────────────────────────────────────────────────
 
 func (m Model) View() string {
@@ -823,8 +736,6 @@ func (m Model) View() string {
 		return m.viewFilePicker()
 	case pageSending:
 		return m.viewSending()
-	case pageNvimPick:
-		return m.viewNvimPick()
 	}
 	return ""
 }
@@ -917,13 +828,9 @@ func (m Model) viewFilePicker() string {
 	header := titleStyle.Render(fmt.Sprintf("Browse → %s  (%s:%d)",
 		m.selectedPeer.Name, m.selectedPeer.IP, m.selectedPeer.Port))
 
-	nvimHint := ""
-	if m.nvimSocket != "" {
-		nvimHint = "  ctrl+f nvim-telescope"
-	}
 	hint := dimStyle.Render(
 		"  ↑/↓ ctrl+p/n navigate  enter open/send  → dir only  " +
-			"←/backspace up  ctrl+u clear  esc/ctrl+q back" + nvimHint)
+			"←/backspace up  ctrl+u clear  esc/ctrl+q back")
 	errLine := ""
 	if m.browserErr != "" {
 		errLine = "\n" + statusErr.Render("  ✗ "+m.browserErr)
@@ -1048,29 +955,6 @@ func preferredStartDir() string {
 
 // Run starts the Bubble Tea program.
 func Run(servePort int, serveName, serveDir string) error {
-	// ── nvim terminal: lock Esc inside the TUI ────────────────────────────────
-	// When running inside nvim's :term, Esc is intercepted by nvim which exits
-	// terminal-insert mode and makes the app appear frozen.
-	// Solution: connect to the running nvim instance via its socket and
-	// temporarily remap Esc so it passes straight through to us.
-	// The mapping is removed automatically when the app exits.
-	nvimSocket := os.Getenv("NVIM")
-	if nvimSocket == "" {
-		nvimSocket = os.Getenv("NVIM_LISTEN_ADDRESS")
-	}
-	if nvimSocket != "" {
-		remap := exec.Command("nvim", "--server", nvimSocket,
-			"--remote-expr", "execute('tnoremap <Esc> <Esc>')")
-		if err := remap.Run(); err == nil {
-			// Restore on exit so nvim behaves normally after the TUI closes.
-			defer exec.Command("nvim", "--server", nvimSocket,
-				"--remote-expr", "execute('tunmap <Esc>')").Run()
-		}
-		// If nvim --server fails (old nvim, wrong socket, etc.) we continue
-		// without the remap — the user can still use Ctrl+\ Ctrl+N to escape.
-	}
-	// ─────────────────────────────────────────────────────────────────────────
-
 	// Silence the standard logger so server log.Printf calls don't corrupt the TUI.
 	log.SetOutput(io.Discard)
 
