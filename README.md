@@ -1,6 +1,7 @@
 # usbjieguo
 
 輕量級 LAN 檔案傳輸 CLI 工具。無需 USB、無需雲端，同一網路下一行指令即可傳檔。
+![image](https://github.com/user-attachments/assets/a0f2e3f4-99bb-4aed-a739-7b979f5384dd)
 
 ---
 
