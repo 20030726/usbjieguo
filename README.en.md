@@ -1,6 +1,7 @@
 # usbjieguo
 
 Lightweight LAN file transfer CLI tool. No USB, no cloud — send files across the same network with a single command.
+![image](https://github.com/user-attachments/assets/a0f2e3f4-99bb-4aed-a739-7b979f5384dd)
 
 ---
 
